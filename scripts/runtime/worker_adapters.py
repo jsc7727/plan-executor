@@ -818,11 +818,16 @@ class AiCliWorkerAdapter(BaseAdapter):
         engine = self._detect_engine(lane)
         worker_id = str(runtime.get("worker_id", "")).strip()
         worker_role = str(runtime.get("worker_role", "")).strip()
-        template = str(runtime.get("worker_command_template", "")).strip() or str(lane.get("worker_command_template", "")).strip()
+        configured_template = str(runtime.get("worker_command_template", "")).strip() or str(lane.get("worker_command_template", "")).strip()
+        template = configured_template
         if not template:
             template = self._default_template(engine)
         if "{cmd}" not in template:
             template = template + " {cmd}"
+        repair_engine = "codex"
+        repair_template = configured_template if engine == repair_engine and configured_template else self._default_template(repair_engine)
+        if "{cmd}" not in repair_template:
+            repair_template = repair_template + " {cmd}"
 
         timeout_sec = int(runtime.get("ai_timeout_sec", lane.get("ai_timeout_sec", 180)))
         max_retries = int(runtime.get("ai_max_retries", lane.get("ai_max_retries", 1)))
@@ -928,6 +933,13 @@ class AiCliWorkerAdapter(BaseAdapter):
         if effective_engine != engine:
             fallback_evidence.append(f"engine-fallback:{engine}\u2192{effective_engine}")
         fallback_evidence.append(f"fallback-chain:{','.join(fallback_chain)}")
+        repair_available = effective_engine == repair_engine
+        repair_reason = "ok"
+        if not repair_available:
+            repair_available, repair_reason, _ = self._check_available(repair_engine, project_root)
+        fallback_evidence.append(f"repair-engine:{repair_engine}")
+        if not repair_available:
+            fallback_evidence.append(f"repair-disabled:{repair_engine}:{repair_reason}")
 
         if not commands:
             artifact = self._normalize_ai_result(
@@ -1186,13 +1198,13 @@ class AiCliWorkerAdapter(BaseAdapter):
                             commands=command_results,
                             error=f"ai-worker command failed: {wrapped_cmd}",
                         )
-                # Logic failure: attempt repair via the AI engine
-                # (skip if infra fallback already resolved the failure)
-                while not succeeded and repair_attempts < max_replan:
+                # Logic failure: attempt repair via dedicated repair engine (codex).
+                # This prevents natural-language repair prompts from being executed by shell fallback.
+                while not succeeded and repair_available and repair_attempts < max_replan:
                     repair_attempts += 1
                     repair_prompt = _build_repair_prompt(cmd, stderr, stdout, repair_attempts, max_replan)
                     try:
-                        repair_wrapped = _render_worker_template(template, lane, repair_prompt, ctx)
+                        repair_wrapped = _render_worker_template(repair_template, lane, repair_prompt, ctx)
                     except Exception:
                         break
                     repair_started_at = _utc_now()
@@ -1228,7 +1240,7 @@ class AiCliWorkerAdapter(BaseAdapter):
                             "stderr": repair_stderr,
                             "stdout_parsed": _json_or_text(repair_stdout),
                             "cwd": str(project_root),
-                            "engine": effective_engine,
+                            "engine": repair_engine,
                             "worker_id": worker_id,
                             "worker_role": worker_role,
                             "started_at": repair_started_at,
@@ -1251,6 +1263,8 @@ class AiCliWorkerAdapter(BaseAdapter):
 
             if not succeeded:
                 repair_tag = "logic-failure-exhausted" if repair_attempts > 0 else "command-failed"
+                if max_replan > 0 and repair_attempts == 0 and not repair_available:
+                    repair_tag = "logic-failure-repair-unavailable"
                 artifact = self._normalize_ai_result(
                     ctx=ctx,
                     lane=lane,

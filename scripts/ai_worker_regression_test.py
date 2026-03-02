@@ -6,12 +6,15 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from runtime.event_store import EventStore
 from runtime.orchestrator import RuntimeOrchestrator
+from runtime.worker_adapters import AiCliWorkerAdapter
+import runtime.worker_adapters as worker_adapters_module
 
 
 def utc_compact() -> str:
@@ -192,6 +195,81 @@ def run_case(
     return ok, detail
 
 
+def run_repair_engine_split_case(project_root: Path) -> Tuple[bool, Dict[str, Any]]:
+    adapter = AiCliWorkerAdapter()
+    lane = {
+        "id": "lane-repair-split",
+        "owner_role": "planner",
+        "commands": ["bootstrap-cmd", "failing-command"],
+        "_runtime": {
+            "run_id": f"repair-split-{utc_compact()}",
+            "worker_id": "worker-repair",
+            "worker_role": "planner",
+            "worker_engine": "codex",
+            "worker_command_template": 'codex exec --enable multi_agent --skip-git-repo-check "{cmd}"',
+            "fallback_chain": "codex,shell",
+            "ai_timeout_sec": 30,
+            "ai_max_retries": 0,
+            "ai_backoff_sec": 0,
+            "max_replan": 1,
+        },
+    }
+
+    calls: List[str] = []
+
+    def fake_check_available(engine: str, _project_root: Path) -> Tuple[bool, str, Dict[str, Any]]:
+        if engine == "codex":
+            return True, "ok", {"check_cmd": "fake-codex-check", "returncode": 0, "stdout": "ok", "stderr": ""}
+        if engine == "gemini":
+            return False, "gemini-cli-not-found", {"check_cmd": "fake-gemini-check", "returncode": 127, "stdout": "", "stderr": "not found"}
+        return False, "unsupported-engine", {"check_cmd": "fake-engine-check", "returncode": 2, "stdout": "", "stderr": engine}
+
+    def fake_run(cmd: str, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        rendered = str(cmd)
+        calls.append(rendered)
+        if "The following command failed" in rendered:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="repair-ok", stderr="")
+        if rendered.strip() == "bootstrap-cmd":
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="bootstrap-ok", stderr="")
+        if rendered.strip() == "failing-command":
+            return subprocess.CompletedProcess(args=cmd, returncode=2, stdout="", stderr="tests failed")
+        if "codex exec" in rendered and "bootstrap-cmd" in rendered:
+            return subprocess.CompletedProcess(args=cmd, returncode=124, stdout="", stderr="timeout>30s")
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="ok", stderr="")
+
+    original_check_available = adapter._check_available
+    original_run = worker_adapters_module.subprocess.run
+    adapter._check_available = fake_check_available  # type: ignore[assignment]
+    worker_adapters_module.subprocess.run = fake_run  # type: ignore[assignment]
+    try:
+        result = adapter.run_lane(lane, project_root)
+    finally:
+        adapter._check_available = original_check_available  # type: ignore[assignment]
+        worker_adapters_module.subprocess.run = original_run  # type: ignore[assignment]
+
+    repair_attempts = [row for row in result.commands if str(row.get("attempt", "")).startswith("repair-")]
+    shell_fallbacks = [row for row in result.commands if str(row.get("attempt", "")) == "infra-fallback-shell"]
+    repair_wrapped = str(repair_attempts[0].get("wrapped_cmd", "")) if repair_attempts else ""
+
+    ok = (
+        result.status == "pass"
+        and len(repair_attempts) == 1
+        and len(shell_fallbacks) == 1
+        and str(repair_attempts[0].get("engine", "")) == "codex"
+        and "codex exec" in repair_wrapped
+        and "The following command failed" in repair_wrapped
+    )
+    detail = {
+        "case_id": "repair-engine-split",
+        "status": result.status,
+        "repair_attempts": len(repair_attempts),
+        "shell_fallbacks": len(shell_fallbacks),
+        "repair_engine": str(repair_attempts[0].get("engine", "")) if repair_attempts else "",
+        "calls": len(calls),
+    }
+    return ok, detail
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run ai-worker E2E regression scenarios.")
     parser.add_argument("--project-root", default=".", help="Project root containing .plan-executor")
@@ -223,7 +301,18 @@ def main() -> int:
         if ok:
             passed += 1
 
-    total = len(cases)
+    repair_ok, repair_detail = run_repair_engine_split_case(project_root)
+    rows.append(repair_detail)
+    repair_status = "PASS" if repair_ok else "FAIL"
+    print(
+        f"[{repair_status}] {repair_detail['case_id']} "
+        f"status={repair_detail['status']} repair_attempts={repair_detail['repair_attempts']} "
+        f"shell_fallbacks={repair_detail['shell_fallbacks']} repair_engine={repair_detail['repair_engine']}"
+    )
+    if repair_ok:
+        passed += 1
+
+    total = len(cases) + 1
     print("-" * 40)
     print(f"RESULT: {passed}/{total} passed")
     return 0 if passed == total else 1
