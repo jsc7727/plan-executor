@@ -193,14 +193,16 @@ When a command fails, the failure is classified:
 
 | Type | Trigger | Handling |
 |------|---------|----------|
-| **Infrastructure** | Timeout, SIGKILL, SIGSEGV, binary not found, empty stderr | Deterministic: PE retries with backoff, then fails the lane. |
-| **Logic** | Nonzero exit with meaningful stderr (test fail, build error) | AI-judged: Builds repair prompt from stderr/stdout, sends to AI engine for diagnosis and fix. Bounded by `max_replan`. |
+| **Infrastructure** | Timeout, SIGKILL, SIGSEGV, binary not found, empty stderr | Deterministic: PE retries with backoff, then tries remaining engines in `fallback_chain`. Template is synchronized on engine switch so subsequent commands use the correct wrapper. |
+| **Logic** | Nonzero exit with meaningful stderr (test fail, build error) | AI-judged: Builds repair prompt from stderr/stdout, sends to AI engine for diagnosis and fix. Bounded by `max_replan`. Skipped if infra fallback already resolved the failure. |
 
 Classification logic (`_classify_failure`):
 - Timeout → infrastructure
 - Return codes 124, 125, 126, 127, 137, 139 → infrastructure
 - Empty stderr with nonzero exit → infrastructure
 - Everything else → logic
+
+**Infrastructure fallback during execution:** When an infrastructure failure occurs mid-lane, PE walks the remaining `fallback_chain` engines. On success, `effective_engine` and `template` are both updated so that all subsequent commands in the same lane run through the new engine. This prevents silent misrouting where a fallback succeeds for one command but later commands revert to the failed engine's template.
 
 The repair prompt is sanitized (`_sanitize_for_prompt`) to prevent shell injection before being passed to the AI engine.
 

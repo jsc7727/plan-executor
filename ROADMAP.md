@@ -57,7 +57,7 @@ Summary of what exists as of 2026-03-02:
 
 ### Phase 3: Multi-Agent Engine (Codex-first parallel orchestration)
 
-- Status: **~50% complete** (infrastructure exists, mock E2E passes, real Codex E2E untested).
+- Status: **~75% complete** (engine flag, hybrid failure handling, fallback chain implemented; real Codex E2E untested).
 - What exists:
   - `frontstage_codex_teams.py`: parallel role agents with consensus (propose/critique/revise).
   - `delegate_worker.py`: Codex and Gemini engine detection and command wrapping.
@@ -65,10 +65,10 @@ Summary of what exists as of 2026-03-02:
   - `frontstage_role_worker.py`: persistent worker processes with JSON IPC.
 - Tasks:
   - Wire frontstage → hybrid_pipeline → orchestrator as one-command E2E flow.
-  - Add engine fallback policy: Codex fail → Gemini → shell, configurable per runbook.
-  - Add `--engine` flag to `runtime_cli.py start` for agent engine selection.
+  - ~~Add engine fallback policy: Codex fail → Gemini → shell, configurable per runbook.~~ Done. Includes runtime fallback with template synchronization.
+  - ~~Add `--engine` flag to `runtime_cli.py start` for agent engine selection.~~ Done.
   - Expand `frontstage_codex_teams_regression_test.py` to cover multi-engine scenarios with mocks.
-  - Add hybrid failure handling: PE handles infrastructure/guardrail failures deterministically, logic failures (test fail, build error, wrong output) are routed back to Codex with error context for AI-judged repair, bounded by `max_replan` to prevent infinite loops.
+  - ~~Add hybrid failure handling: PE handles infrastructure/guardrail failures deterministically, logic failures (test fail, build error, wrong output) are routed back to Codex with error context for AI-judged repair, bounded by `max_replan` to prevent infinite loops.~~ Done.
 - Done criteria:
   - `python scripts/frontstage_codex_teams.py --objective "..." --agent-cmd-template "codex exec ..."` runs end-to-end with real Codex.
   - Engine fallback triggers automatically on infrastructure failure without full run abort.
@@ -141,12 +141,12 @@ Summary of what exists as of 2026-03-02:
 
 Priority order (each can be a single PR):
 
-1. `README.md` — install, quick start, architecture diagram. Closes Phase 1.
+1. ~~`README.md` — install, quick start, architecture diagram. Closes Phase 1.~~ Done.
 2. ~~GitHub Actions CI — run all 7 regression test suites on PR. Closes Phase 2.~~ Done.
 3. One-command E2E — `runtime_cli.py start --runbook ... --engine codex` runs frontstage + execution with real Codex. Phase 3 core.
-4. Hybrid failure handling — PE deterministic for infra/guardrail, Codex repair loop for logic failures, bounded by max_replan. Phase 3 core.
+4. ~~Hybrid failure handling — PE deterministic for infra/guardrail, Codex repair loop for logic failures, bounded by max_replan. Phase 3 core.~~ Done.
 5. Multi-engine mock tests — expand frontstage regression to cover Codex/Gemini/shell engine switching with mocks. Phase 3 test.
-6. Engine fallback policy — configurable per-runbook fallback chain (Codex → Gemini → shell). Phase 3 hardening.
+6. ~~Engine fallback policy — configurable per-runbook fallback chain (Codex → Gemini → shell), with runtime template synchronization on engine switch. Phase 3 hardening.~~ Done.
 7. Role SOPs + consensus presets + Codex `[agents]` config generation — Phase 4.
 8. Release docs + versioning — Phase 5.
 
