@@ -4,17 +4,17 @@
 
 ## 기능 요약
 
-plan-executor는 병렬 AI 에이전트(Codex, Gemini)와 합의 프로토콜을 사용하여 광범위한 목표를 유한한 실행 계획으로 변환한 뒤, DAG 기반 레인 오케스트레이션으로 가드레일, 체크포인트, 복구 기능과 함께 실행합니다.
+plan-executor는 병렬 AI 에이전트(Codex)와 합의 프로토콜을 사용하여 광범위한 목표를 유한한 실행 계획으로 변환한 뒤, DAG 기반 레인 오케스트레이션으로 가드레일, 체크포인트, 복구 기능과 함께 실행합니다.
 
 **프론트스테이지** (계획 단계): 여러 에이전트가 제안 → 비평 → 수정 → 합의 단계를 병렬로 수행하여 검증된 런북을 생성합니다.
 
-**런타임** (실행 단계): 오케스트레이터가 레인별로 실행을 구동하며, 적절한 엔진(Codex, Gemini, shell)으로 라우팅하고, 커맨드 가드레일을 적용하고, 게이트를 검증하며, 상태를 영속화하여 중단된 실행을 재개할 수 있습니다.
+**런타임** (실행 단계): 오케스트레이터가 레인별로 실행을 구동하며, 적절한 엔진(Codex, shell)으로 라우팅하고, 커맨드 가드레일을 적용하고, 게이트를 검증하며, 상태를 영속화하여 중단된 실행을 재개할 수 있습니다.
 
 ## 요구사항
 
 - Python 3.10+
 - pip 의존성 없음 (표준 라이브러리만 사용)
-- 선택: Codex CLI (주 AI 엔진), Gemini CLI (보조/대체)
+- 선택: Codex CLI (주 AI 엔진)
 
 ## 빠른 시작
 
@@ -57,7 +57,7 @@ python scripts/runtime_dashboard.py --project-root .
 │        │   ├── ProcessWorkerAdapter   (격리 프로세스)         │
 │        │   ├── WorktreeWorkerAdapter  (git worktree)        │
 │        │   ├── TmuxWorkerAdapter      (tmux 패인)           │
-│        │   ├── AiCliWorkerAdapter     (Codex/Gemini CLI)    │
+│        │   ├── AiCliWorkerAdapter     (Codex CLI)           │
 │        │   └── DelegateWorkerAdapter  (비동기 큐)            │
 │        │                                                    │
 │        ├── gate_engine.py        (체크포인트 검증)            │
@@ -111,7 +111,7 @@ python scripts/runtime_dashboard.py --project-root .
     "max_replan": 3,
     "stall_rounds_threshold": 2,
     "verification_pass_rate_min": 0.7,
-    "fallback_chain": "codex,gemini,shell",
+    "fallback_chain": "codex,shell",
     "command_guardrails": {
       "enabled": true,
       "profile": "ci",
@@ -165,22 +165,21 @@ python scripts/runtime_dashboard.py --project-root .
 
 ### 엔진 시스템
 
-plan-executor는 세 가지 실행 엔진을 지원합니다:
+plan-executor는 두 가지 실행 엔진을 지원합니다:
 
 | 엔진 | CLI | 용도 |
 |------|-----|------|
 | **shell** | `subprocess.run()` | 기본값. 명령어 직접 실행. |
 | **codex** | `codex exec "{cmd}"` | 주 AI 엔진. Codex가 해석하고 실행. |
-| **gemini** | `gemini -p "{cmd}" --yolo` | 보조 AI 엔진. Codex 불가 시 대체. |
 
 **엔진 우선순위:** 매니페스트 워커 엔진 > CLI `--engine` 플래그 > 기본값(shell).
 
 ### 폴백 체인 (Fallback Chain)
 
-AI 엔진이 사용 불가능할 때 (바이너리 없음, API 키 비어있음, 헬스체크 실패), 폴백 체인이 다음에 시도할 엔진을 결정합니다.
+AI 엔진이 사용 불가능할 때 (바이너리 없음, 로그인 체크 실패), 폴백 체인이 다음에 시도할 엔진을 결정합니다.
 
 ```
-limits.fallback_chain: "codex,gemini,shell"
+limits.fallback_chain: "codex,shell"
 ```
 
 - **기본값** (설정 없음): 주 엔진만 사용. 불가하면 레인 스킵.
@@ -431,7 +430,7 @@ python scripts/consensus_regression_test.py --project-root .          # 2 케이
 python scripts/plan_search_regression_test.py --project-root .        # 2 케이스
 python scripts/frontstage_codex_teams_regression_test.py --project-root .  # 1 케이스 (다단계)
 python scripts/delegate_worker_regression_test.py --project-root .    # 1 케이스 (E2E)
-python scripts/ai_worker_regression_test.py --project-root .          # 4 케이스 (codex/gemini/폴백/repair 분리)
+python scripts/ai_worker_regression_test.py --project-root .          # 2 케이스 (codex/repair 분리)
 ```
 
 ## 로드맵

@@ -4,17 +4,17 @@ Multi-agent orchestration runtime for converting objectives into executable plan
 
 ## What it does
 
-plan-executor converts broad objectives into finite execution plans using parallel AI agents (Codex, Gemini) with consensus, then executes those plans via DAG-based lane orchestration with guardrails, checkpoints, and recovery.
+plan-executor converts broad objectives into finite execution plans using parallel AI agents (Codex) with consensus, then executes those plans via DAG-based lane orchestration with guardrails, checkpoints, and recovery.
 
 **Frontstage** (planning): Multiple agents run in parallel through propose, critique, revise, and consensus phases to produce a validated runbook.
 
-**Runtime** (execution): The orchestrator drives execution lane by lane, routing each step to the appropriate engine (Codex, Gemini, or shell), enforcing command guardrails, verifying gates, and persisting state so interrupted runs can be resumed.
+**Runtime** (execution): The orchestrator drives execution lane by lane, routing each step to the appropriate engine (Codex or shell), enforcing command guardrails, verifying gates, and persisting state so interrupted runs can be resumed.
 
 ## Requirements
 
 - Python 3.10+
 - No pip dependencies (stdlib only)
-- Optional: Codex CLI (primary AI engine), Gemini CLI (secondary/fallback)
+- Optional: Codex CLI (primary AI engine)
 
 ## Quick Start
 
@@ -57,7 +57,7 @@ python scripts/runtime_dashboard.py --project-root .
 │        │   ├── ProcessWorkerAdapter   (isolated process)    │
 │        │   ├── WorktreeWorkerAdapter  (git worktree)        │
 │        │   ├── TmuxWorkerAdapter      (tmux pane)           │
-│        │   ├── AiCliWorkerAdapter     (Codex/Gemini CLI)    │
+│        │   ├── AiCliWorkerAdapter     (Codex CLI)           │
 │        │   └── DelegateWorkerAdapter  (async queue)         │
 │        │                                                    │
 │        ├── gate_engine.py        (checkpoint verification)  │
@@ -111,7 +111,7 @@ A runbook is the execution plan. It defines **what** to run, in **what order**, 
     "max_replan": 3,
     "stall_rounds_threshold": 2,
     "verification_pass_rate_min": 0.7,
-    "fallback_chain": "codex,gemini,shell",
+    "fallback_chain": "codex,shell",
     "command_guardrails": {
       "enabled": true,
       "profile": "ci",
@@ -165,22 +165,21 @@ The orchestrator builds a dependency map from `dag.nodes` and executes lanes in 
 
 ### Engine System
 
-plan-executor supports three execution engines:
+plan-executor supports two execution engines:
 
 | Engine | CLI | Use case |
 |--------|-----|----------|
 | **shell** | `subprocess.run()` | Default. Runs commands directly. |
 | **codex** | `codex exec "{cmd}"` | Primary AI engine. Codex interprets and executes. |
-| **gemini** | `gemini -p "{cmd}" --yolo` | Secondary AI engine. Fallback when Codex unavailable. |
 
 **Engine priority:** Manifest worker engine > CLI `--engine` flag > default (shell).
 
 ### Fallback Chain
 
-When an AI engine is unavailable (binary missing, API key empty, health check fails), the fallback chain determines what to try next.
+When an AI engine is unavailable (binary missing, login check fails), the fallback chain determines what to try next.
 
 ```
-limits.fallback_chain: "codex,gemini,shell"
+limits.fallback_chain: "codex,shell"
 ```
 
 - Default (no config): primary engine only. If unavailable, lane is skipped.
@@ -443,7 +442,7 @@ python scripts/consensus_regression_test.py --project-root .          # 2 cases
 python scripts/plan_search_regression_test.py --project-root .        # 2 cases
 python scripts/frontstage_codex_teams_regression_test.py --project-root .  # 1 case (multi-phase)
 python scripts/delegate_worker_regression_test.py --project-root .    # 1 case (E2E)
-python scripts/ai_worker_regression_test.py --project-root .          # 4 cases (codex/gemini/fallback/repair-split)
+python scripts/ai_worker_regression_test.py --project-root .          # 2 cases (codex/repair-split)
 ```
 
 ## Roadmap

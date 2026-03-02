@@ -435,7 +435,7 @@ Select worker runtime by environment capability:
 - `worktree-worker`: assign one git worktree per lane for file isolation.
 - `tmux-worker`: map each lane to a tmux pane/session when available.
 - `process-worker`: execute lane commands through per-worker command templates (separate subprocess runtime).
-- `ai-worker`: run lane prompts via `codex`/`gemini` CLI only.
+- `ai-worker`: run lane prompts via `codex` CLI only.
 - `delegate-worker`: enqueue lane commands to a file-backed delegate queue and wait for external worker responses.
 
 Adapter rules:
@@ -448,9 +448,9 @@ Adapter rules:
 - `worktree-worker` executes lane commands in isolated git worktrees.
 - `tmux-worker` executes lane commands in tmux sessions; fallback to inline when unavailable.
 - `process-worker` executes lane commands with worker templates from team manifest (`command_template`).
-- `ai-worker` executes lane prompts with worker `engine` (`codex` or `gemini`) and `command_template`.
+- `ai-worker` executes lane prompts with worker `engine` (`codex`) and `command_template`.
 - `ai-worker` supports per-worker `timeout_sec`, `max_retries`, `backoff_sec`.
-- If selected AI CLI is not installed or not logged in (`codex login status` fail or missing `GEMINI_API_KEY`), lane is marked `ai-worker-unavailable-skip` and run continues.
+- If selected AI CLI is not installed or not logged in (`codex login status` fail), lane is marked `ai-worker-unavailable-skip` and run continues.
 - `ai-worker` writes standardized lane artifacts to `<project-root>/.plan-executor/artifacts/<run-id>/<lane-id>.json`.
 - `delegate-worker` uses request/response files under `<project-root>/.plan-executor/delegates/`.
 - `delegate-worker` supports per-worker `delegate_timeout_sec` (or `timeout_sec`) and `delegate_poll_sec` (or `poll_sec`).
@@ -545,7 +545,7 @@ python C:/Users/JSC/.codex/skills/plan-executor/scripts/bootstrap_team_manifest.
   --worker-cmd-template "cmd /c {cmd}"
 ```
 
-`ai-worker` manifest example (codex/gemini only):
+`ai-worker` manifest example (codex only):
 
 ```bash
 python C:/Users/JSC/.codex/skills/plan-executor/scripts/bootstrap_team_manifest.py \
@@ -556,17 +556,6 @@ python C:/Users/JSC/.codex/skills/plan-executor/scripts/bootstrap_team_manifest.
   --ai-timeout-sec 180 \
   --ai-max-retries 1 \
   --ai-backoff-sec 1.5
-```
-
-Use Gemini only when explicitly requested:
-
-```bash
-python C:/Users/JSC/.codex/skills/plan-executor/scripts/bootstrap_team_manifest.py \
-  --project-root <project-root> \
-  --mode swarm-style \
-  --adapter ai-worker \
-  --workers 2 \
-  --ai-engine gemini
 ```
 
 AI worker E2E regression scenarios:
@@ -913,7 +902,7 @@ python C:/Users/JSC/.codex/skills/plan-executor/scripts/runtime_benchmark.py --p
 Report includes AI reliability fields:
 
 - `ai_skip_total`, `ai_skip_rate`
-- `ai_engine_success_rates` (codex/gemini/unknown)
+- `ai_engine_success_rates` (codex/unknown)
 
 Benchmark output:
 
@@ -932,7 +921,7 @@ Use this matrix to communicate boundaries clearly when users compare depth/featu
 | Queue | daemon `enqueue/run-once/serve/recover` | Not a native queue daemon |
 | Dashboard | Terminal dashboard with runs/events/queue/messages | Event trace centric |
 | Gate engine | Executes shell `gate_commands` with pass/fail | Mostly agent-driven manual validation |
-| Worker adapters | `inline/worktree/tmux/process/ai(codex,gemini)` with fallback | Multi-agent provider/process orchestration |
+| Worker adapters | `inline/worktree/tmux/process/ai(codex)` with fallback | Multi-agent provider/process orchestration |
 | Resume/state | JSON state + JSONL events full replay | Session/tooling state persistence |
 | Parallelism | `ThreadPoolExecutor` + DAG scheduler | Tool/agent parallel calls |
 | Multi-agent model | Role emulation in one runtime | Real N-agent runtime/process model |
