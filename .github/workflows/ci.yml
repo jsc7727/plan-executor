@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  regression-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Guardrails regression
+        run: python scripts/guardrails_regression_test.py --project-root .
+      - name: Runbook lint regression
+        run: python scripts/runbook_lint_regression_test.py --project-root .
+      - name: Consensus regression
+        run: python scripts/consensus_regression_test.py --project-root .
+      - name: Plan search regression
+        run: python scripts/plan_search_regression_test.py --project-root .
+      - name: Frontstage codex teams regression
+        run: python scripts/frontstage_codex_teams_regression_test.py --project-root .
+      - name: Delegate worker regression
+        run: python scripts/delegate_worker_regression_test.py --project-root .
+      - name: AI worker regression
+        run: python scripts/ai_worker_regression_test.py --project-root .
