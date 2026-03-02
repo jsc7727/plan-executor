@@ -1,0 +1,56 @@
+{
+  "meta": {
+    "generated_at_utc": "20260301T184913Z",
+    "mode": "swarm-style",
+    "adapter": "tmux-worker",
+    "requested_adapter": "tmux-worker",
+    "task_type": "code",
+    "worker_count": 5
+  },
+  "workers": [
+    {
+      "id": "worker-1",
+      "role": "micro-worker",
+      "stage": "build",
+      "contract": "micro-shard-1"
+    },
+    {
+      "id": "worker-2",
+      "role": "micro-worker",
+      "stage": "build",
+      "contract": "micro-shard-2"
+    },
+    {
+      "id": "worker-3",
+      "role": "micro-worker",
+      "stage": "build",
+      "contract": "micro-shard-3"
+    },
+    {
+      "id": "worker-4",
+      "role": "micro-worker",
+      "stage": "build",
+      "contract": "micro-shard-4"
+    },
+    {
+      "id": "worker-5",
+      "role": "micro-worker",
+      "stage": "build",
+      "contract": "micro-shard-5"
+    }
+  ],
+  "hooks": [
+    "preflight",
+    "lane_start",
+    "lane_done",
+    "checkpoint",
+    "post_merge",
+    "finalize"
+  ],
+  "watchdog": {
+    "heartbeat_required": true,
+    "suspect_after_missed_cycles": 1,
+    "recycle_after_missed_cycles": 2
+  },
+  "notes": []
+}

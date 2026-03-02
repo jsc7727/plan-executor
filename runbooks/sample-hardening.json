@@ -1,0 +1,94 @@
+{
+  "meta": {
+    "generated_at_utc": "20260301T184424Z",
+    "preset": "metagpt-swe-line",
+    "paper_basis": [
+      "MetaGPT"
+    ],
+    "profile": "hardening",
+    "mode": "sequential",
+    "task_type": "code"
+  },
+  "team": {
+    "orchestrator": "enabled",
+    "integrator": "enabled",
+    "lane_roles": [
+      "product-manager",
+      "architect",
+      "project-manager",
+      "engineer",
+      "qa-engineer"
+    ]
+  },
+  "dag": {
+    "nodes": [
+      {
+        "id": "lane-1",
+        "depends_on": []
+      },
+      {
+        "id": "lane-2",
+        "depends_on": [
+          "lane-1"
+        ]
+      }
+    ]
+  },
+  "lanes": [
+    {
+      "id": "lane-1",
+      "owner_role": "product-manager",
+      "scope": "code lane work for lane-1",
+      "input_artifacts": [],
+      "output_contract": {
+        "files_changed": [],
+        "acceptance": []
+      },
+      "done_criteria": [
+        "checkpoint accepted by integrator"
+      ]
+    },
+    {
+      "id": "lane-2",
+      "owner_role": "architect",
+      "scope": "code lane work for lane-2",
+      "input_artifacts": [],
+      "output_contract": {
+        "files_changed": [],
+        "acceptance": []
+      },
+      "done_criteria": [
+        "checkpoint accepted by integrator"
+      ]
+    }
+  ],
+  "checkpoints": [
+    {
+      "id": "checkpoint-1",
+      "after_lanes": [
+        "lane-1",
+        "lane-2"
+      ],
+      "gate_criteria": [
+        "targeted-tests-pass",
+        "lint-clean",
+        "broad-check-pass",
+        "regression-bundle-pass"
+      ]
+    }
+  ],
+  "limits": {
+    "max_replan": 3,
+    "stall_rounds_threshold": 2,
+    "merge_conflicts_threshold": 2,
+    "verification_pass_rate_min": 0.7
+  },
+  "hooks": [
+    "preflight",
+    "lane_start",
+    "lane_done",
+    "checkpoint",
+    "post_merge",
+    "finalize"
+  ]
+}

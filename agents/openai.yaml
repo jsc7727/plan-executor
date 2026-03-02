@@ -1,0 +1,4 @@
+interface:
+  display_name: "Plan Executor"
+  short_description: "Plan tasks and execute continuously to completion"
+  default_prompt: "Create a concise plan, execute tasks in order, update progress continuously, and finish with verification."
