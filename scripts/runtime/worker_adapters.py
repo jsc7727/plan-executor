@@ -66,6 +66,88 @@ def _clip(text: str, n: int = 4000) -> str:
     return text[-n:] if text else ""
 
 
+def _resolve_fallback_chain(lane: Dict[str, Any], primary_engine: str) -> List[str]:
+    """Resolve the engine fallback chain for a lane.
+
+    Reads from lane._runtime.fallback_chain or lane.fallback_chain.
+    Default (no config): primary engine only — preserves skip behavior.
+    With explicit config (e.g. "codex,gemini,shell"): tries engines in order.
+    Returns list of engines to try IN ORDER (primary first, then fallbacks).
+    """
+    runtime = lane.get("_runtime", {})
+    chain_raw = runtime.get("fallback_chain", lane.get("fallback_chain", ""))
+    if isinstance(chain_raw, list) and chain_raw:
+        chain = [str(x).strip().lower() for x in chain_raw if str(x).strip()]
+    elif isinstance(chain_raw, str) and chain_raw.strip():
+        chain = [x.strip().lower() for x in chain_raw.split(",") if x.strip()]
+    else:
+        # No fallback_chain configured: default to primary engine only (preserves skip behavior)
+        chain = [primary_engine]
+
+    # Ensure primary is first if not already
+    if chain and chain[0] != primary_engine:
+        chain = [primary_engine] + [e for e in chain if e != primary_engine]
+    return chain
+
+
+def _classify_failure(returncode: int, stderr: str, timed_out: bool) -> str:
+    """Classify a command failure as 'infrastructure' or 'logic'.
+
+    Infrastructure: timeout, signal kill, empty stderr (crash).
+    Logic: nonzero exit with meaningful stderr (test/build/code error).
+    """
+    if timed_out:
+        return "infrastructure"
+    if returncode in (124, 125, 126, 127, 137, 139):
+        # 124=timeout, 125=docker, 126=permission, 127=not-found, 137=SIGKILL, 139=SIGSEGV
+        return "infrastructure"
+    stderr_stripped = (stderr or "").strip()
+    if not stderr_stripped and returncode != 0:
+        return "infrastructure"
+    return "logic"
+
+
+def _sanitize_for_prompt(text: str) -> str:
+    """Strip shell metacharacters from text embedded in a repair prompt.
+
+    The repair prompt is passed through _render_worker_template and then to
+    subprocess.run(shell=True).  Unsanitised stderr/stdout could inject
+    arbitrary shell commands.  We replace dangerous metacharacters with
+    safe placeholders.
+    """
+    replacements = {
+        "`": "\uff40",
+        "$(": "\uff04(",
+        "$": "\uff04",
+        "\\": "\uff3c",
+        '"': "\u201c",
+        "'": "\uff07",
+        ";": "\uff1b",
+        "|": "\uff5c",
+        "&": "\uff06",
+        "\n": " ",
+    }
+    out = text
+    for old, new in replacements.items():
+        out = out.replace(old, new)
+    return out
+
+
+def _build_repair_prompt(original_cmd: str, stderr: str, stdout: str, attempt: int, max_attempts: int) -> str:
+    """Build a prompt asking the AI engine to diagnose and fix a logic failure."""
+    safe_stderr = _sanitize_for_prompt(_clip(stderr, 2000))
+    safe_stdout = _sanitize_for_prompt(_clip(stdout, 1000))
+    safe_cmd = _sanitize_for_prompt(original_cmd)
+    return (
+        f"The following command failed (attempt {attempt}/{max_attempts}):\n"
+        f"Command: {safe_cmd}\n"
+        f"Stderr: {safe_stderr}\n"
+        f"Stdout (tail): {safe_stdout}\n\n"
+        f"Diagnose the error and run a corrected version of the command. "
+        f"If the fix requires modifying code, make the minimal change needed and re-run."
+    )
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -665,7 +747,7 @@ class AiCliWorkerAdapter(BaseAdapter):
     def _default_template(self, engine: str) -> str:
         if engine == "gemini":
             return 'gemini -p "{cmd}" --yolo'
-        return 'codex exec --skip-git-repo-check "{cmd}"'
+        return 'codex exec --enable multi_agent --skip-git-repo-check "{cmd}"'
 
     def _normalize_ai_result(
         self,
@@ -745,15 +827,53 @@ class AiCliWorkerAdapter(BaseAdapter):
         timeout_sec = int(runtime.get("ai_timeout_sec", lane.get("ai_timeout_sec", 180)))
         max_retries = int(runtime.get("ai_max_retries", lane.get("ai_max_retries", 1)))
         backoff_sec = float(runtime.get("ai_backoff_sec", lane.get("ai_backoff_sec", 1.5)))
+        max_replan = int(runtime.get("max_replan", lane.get("max_replan", 2)))
         if timeout_sec < 10:
             timeout_sec = 10
         if max_retries < 0:
             max_retries = 0
         if backoff_sec < 0:
             backoff_sec = 0.0
+        if max_replan < 0:
+            max_replan = 0
 
-        available, reason, check_detail = self._check_available(engine, project_root)
+        fallback_chain = _resolve_fallback_chain(lane, engine)
+        fallback_attempts: List[Dict[str, Any]] = []
+        effective_engine = engine
+        available = False
+        reason = ""
+        check_detail: Dict[str, Any] = {}
+
+        for candidate_engine in fallback_chain:
+            if candidate_engine == "shell":
+                # Shell fallback: delegate to InlineWorkerAdapter
+                inline = InlineWorkerAdapter()
+                result = inline.run_lane(lane, project_root)
+                result.evidence.append("engine-fallback-to-shell")
+                result.evidence.append(f"fallback-chain:{','.join(fallback_chain)}")
+                for fa in fallback_attempts:
+                    result.evidence.append(f"fallback-skip:{fa['engine']}:{fa['reason']}")
+                return result
+
+            available, reason, check_detail = self._check_available(candidate_engine, project_root)
+            if available:
+                effective_engine = candidate_engine
+                if candidate_engine != engine:
+                    # Fell back to a different engine; update template if it was the default
+                    default_primary_template = self._default_template(engine)
+                    if template == default_primary_template:
+                        template = self._default_template(effective_engine)
+                break
+            else:
+                fallback_attempts.append({
+                    "engine": candidate_engine,
+                    "reason": reason,
+                    "detail": check_detail,
+                })
+
         if not available:
+            # All engines in chain exhausted (no shell entry or chain was empty)
+            last_detail = check_detail
             artifact = self._normalize_ai_result(
                 ctx=ctx,
                 lane=lane,
@@ -761,18 +881,19 @@ class AiCliWorkerAdapter(BaseAdapter):
                 worker_id=worker_id,
                 worker_role=worker_role,
                 status="skip",
-                reason=reason,
+                reason=f"all-engines-unavailable:{','.join(fa['engine'] for fa in fallback_attempts)}",
                 attempts=[
                     {
-                        "attempt": 1,
-                        "check_cmd": check_detail.get("check_cmd", ""),
-                        "returncode": check_detail.get("returncode", 1),
-                        "stdout": check_detail.get("stdout", ""),
-                        "stderr": check_detail.get("stderr", ""),
+                        "attempt": i + 1,
+                        "check_cmd": fa["detail"].get("check_cmd", ""),
+                        "returncode": fa["detail"].get("returncode", 1),
+                        "stdout": fa["detail"].get("stdout", ""),
+                        "stderr": fa["detail"].get("stderr", ""),
                         "started_at": _utc_now(),
                         "ended_at": _utc_now(),
                         "timed_out": False,
                     }
+                    for i, fa in enumerate(fallback_attempts)
                 ],
             )
             return LaneResult(
@@ -782,18 +903,19 @@ class AiCliWorkerAdapter(BaseAdapter):
                     "ai-worker-unavailable-skip",
                     f"engine:{engine}",
                     reason,
+                    f"fallback-chain:{','.join(fallback_chain)}",
                     f"artifact-json:{artifact}",
                     f"worker-id:{worker_id}" if worker_id else "worker-id:none",
-                ],
+                ] + [f"fallback-skip:{fa['engine']}:{fa['reason']}" for fa in fallback_attempts],
                 commands=[
                     {
                         "cmd": "",
                         "wrapped_cmd": "",
-                        "returncode": check_detail.get("returncode", 1),
-                        "stdout": check_detail.get("stdout", ""),
-                        "stderr": check_detail.get("stderr", ""),
+                        "returncode": last_detail.get("returncode", 1),
+                        "stdout": last_detail.get("stdout", ""),
+                        "stderr": last_detail.get("stderr", ""),
                         "engine": engine,
-                        "check_cmd": check_detail.get("check_cmd", ""),
+                        "check_cmd": last_detail.get("check_cmd", ""),
                         "worker_id": worker_id,
                         "worker_role": worker_role,
                     }
@@ -801,11 +923,17 @@ class AiCliWorkerAdapter(BaseAdapter):
                 error="",
             )
 
+        # Add fallback evidence to indicate which engine is actually running
+        fallback_evidence: List[str] = []
+        if effective_engine != engine:
+            fallback_evidence.append(f"engine-fallback:{engine}\u2192{effective_engine}")
+        fallback_evidence.append(f"fallback-chain:{','.join(fallback_chain)}")
+
         if not commands:
             artifact = self._normalize_ai_result(
                 ctx=ctx,
                 lane=lane,
-                engine=engine,
+                engine=effective_engine,
                 worker_id=worker_id,
                 worker_role=worker_role,
                 status="pass",
@@ -818,9 +946,9 @@ class AiCliWorkerAdapter(BaseAdapter):
                 evidence=[
                     "contract-only-lane",
                     "ai-worker-execution",
-                    f"engine:{engine}",
+                    f"engine:{effective_engine}",
                     f"artifact-json:{artifact}",
-                ],
+                ] + fallback_evidence,
                 commands=[],
             )
 
@@ -831,6 +959,7 @@ class AiCliWorkerAdapter(BaseAdapter):
             cmd = str(raw_cmd).strip()
             if not cmd:
                 continue
+            repair_attempts = 0
             guard = _guardrail_check(lane, cmd, project_root, phase="lane")
             if bool(guard.get("audit_only", False)):
                 guardrail_audit.append(f"guardrail-audit:{guard.get('reason', '')}")
@@ -846,7 +975,7 @@ class AiCliWorkerAdapter(BaseAdapter):
                         "stderr": f"blocked by command guardrail: {guard.get('reason', '')}",
                         "stdout_parsed": _json_or_text(""),
                         "cwd": str(project_root),
-                        "engine": engine,
+                        "engine": effective_engine,
                         "worker_id": worker_id,
                         "worker_role": worker_role,
                         "started_at": _utc_now(),
@@ -857,7 +986,7 @@ class AiCliWorkerAdapter(BaseAdapter):
                 artifact = self._normalize_ai_result(
                     ctx=ctx,
                     lane=lane,
-                    engine=engine,
+                    engine=effective_engine,
                     worker_id=worker_id,
                     worker_role=worker_role,
                     status="fail",
@@ -870,9 +999,9 @@ class AiCliWorkerAdapter(BaseAdapter):
                     evidence=[
                         "guardrail-blocked",
                         "ai-worker-execution",
-                        f"engine:{engine}",
+                        f"engine:{effective_engine}",
                         f"artifact-json:{artifact}",
-                    ],
+                    ] + fallback_evidence,
                     commands=command_results,
                     error=f"ai-worker command blocked by guardrail: {cmd}",
                 )
@@ -882,7 +1011,7 @@ class AiCliWorkerAdapter(BaseAdapter):
                 artifact = self._normalize_ai_result(
                     ctx=ctx,
                     lane=lane,
-                    engine=engine,
+                    engine=effective_engine,
                     worker_id=worker_id,
                     worker_role=worker_role,
                     status="fail",
@@ -895,9 +1024,9 @@ class AiCliWorkerAdapter(BaseAdapter):
                     evidence=[
                         "invalid-worker-template",
                         "ai-worker-execution",
-                        f"engine:{engine}",
+                        f"engine:{effective_engine}",
                         f"artifact-json:{artifact}",
-                    ],
+                    ] + fallback_evidence,
                     commands=command_results,
                     error=f"invalid ai worker command template: {exc}",
                 )
@@ -939,11 +1068,12 @@ class AiCliWorkerAdapter(BaseAdapter):
                         "stderr": stderr,
                         "stdout_parsed": _json_or_text(stdout),
                         "cwd": str(project_root),
-                        "engine": engine,
+                        "engine": effective_engine,
                         "worker_id": worker_id,
                         "worker_role": worker_role,
                         "started_at": started_at,
                         "ended_at": ended_at,
+                        "failure_type": _classify_failure(returncode, stderr, timed_out) if returncode != 0 else "",
                     }
                 )
                 if returncode == 0:
@@ -953,10 +1083,178 @@ class AiCliWorkerAdapter(BaseAdapter):
                     time.sleep(backoff_sec * attempt)
 
             if not succeeded:
+                failure_type = _classify_failure(returncode, stderr, timed_out)
+                if failure_type == "infrastructure":
+                    # Try remaining engines in fallback chain before giving up
+                    current_idx = fallback_chain.index(effective_engine) if effective_engine in fallback_chain else len(fallback_chain)
+                    for next_engine in fallback_chain[current_idx + 1:]:
+                        if next_engine == "shell":
+                            # Shell fallback: run command directly
+                            fb_started = _utc_now()
+                            fb_timed_out = False
+                            fb_rc = 1
+                            fb_stdout = ""
+                            fb_stderr = ""
+                            try:
+                                fb_proc = subprocess.run(cmd, shell=True, cwd=str(project_root), capture_output=True, text=True, timeout=timeout_sec)
+                                fb_rc = int(fb_proc.returncode)
+                                fb_stdout = _clip(fb_proc.stdout)
+                                fb_stderr = _clip(fb_proc.stderr)
+                            except subprocess.TimeoutExpired:
+                                fb_timed_out = True
+                                fb_rc = 124
+                                fb_stderr = f"timeout>{timeout_sec}s"
+                            command_results.append({
+                                "cmd": cmd, "wrapped_cmd": cmd, "attempt": "infra-fallback-shell",
+                                "returncode": fb_rc, "timed_out": fb_timed_out,
+                                "stdout": fb_stdout, "stderr": fb_stderr,
+                                "stdout_parsed": _json_or_text(fb_stdout), "cwd": str(project_root),
+                                "engine": "shell", "worker_id": worker_id, "worker_role": worker_role,
+                                "started_at": fb_started, "ended_at": _utc_now(),
+                                "failure_type": _classify_failure(fb_rc, fb_stderr, fb_timed_out) if fb_rc != 0 else "",
+                                "evidence_tag": f"infra-fallback:{effective_engine}\u2192shell",
+                            })
+                            if fb_rc == 0:
+                                prev_engine = effective_engine
+                                succeeded = True
+                                fallback_evidence.append(f"infra-fallback:{prev_engine}\u2192shell")
+                                effective_engine = "shell"
+                                # Continue subsequent commands via direct shell execution.
+                                template = "{cmd}"
+                            break
+                        fb_avail, _, _ = self._check_available(next_engine, project_root)
+                        if not fb_avail:
+                            continue
+                        fb_template = self._default_template(next_engine)
+                        try:
+                            fb_wrapped = _render_worker_template(fb_template, lane, cmd, ctx)
+                        except Exception:
+                            continue
+                        fb_started = _utc_now()
+                        fb_timed_out = False
+                        fb_rc = 1
+                        fb_stdout = ""
+                        fb_stderr = ""
+                        try:
+                            fb_proc = subprocess.run(fb_wrapped, shell=True, cwd=str(project_root), capture_output=True, text=True, timeout=timeout_sec)
+                            fb_rc = int(fb_proc.returncode)
+                            fb_stdout = _clip(fb_proc.stdout)
+                            fb_stderr = _clip(fb_proc.stderr)
+                        except subprocess.TimeoutExpired:
+                            fb_timed_out = True
+                            fb_rc = 124
+                            fb_stderr = f"timeout>{timeout_sec}s"
+                        command_results.append({
+                            "cmd": cmd, "wrapped_cmd": fb_wrapped, "attempt": f"infra-fallback-{next_engine}",
+                            "returncode": fb_rc, "timed_out": fb_timed_out,
+                            "stdout": fb_stdout, "stderr": fb_stderr,
+                            "stdout_parsed": _json_or_text(fb_stdout), "cwd": str(project_root),
+                            "engine": next_engine, "worker_id": worker_id, "worker_role": worker_role,
+                            "started_at": fb_started, "ended_at": _utc_now(),
+                            "failure_type": _classify_failure(fb_rc, fb_stderr, fb_timed_out) if fb_rc != 0 else "",
+                            "evidence_tag": f"infra-fallback:{effective_engine}\u2192{next_engine}",
+                        })
+                        if fb_rc == 0:
+                            prev_engine = effective_engine
+                            succeeded = True
+                            fallback_evidence.append(f"infra-fallback:{prev_engine}\u2192{next_engine}")
+                            effective_engine = next_engine
+                            # Continue subsequent commands with the fallback engine wrapper.
+                            template = fb_template
+                            break
+
+                    if not succeeded:
+                        artifact = self._normalize_ai_result(
+                            ctx=ctx,
+                            lane=lane,
+                            engine=effective_engine,
+                            worker_id=worker_id,
+                            worker_role=worker_role,
+                            status="fail",
+                            reason="command-failed",
+                            attempts=command_results,
+                        )
+                        return LaneResult(
+                            lane_id=lane_id,
+                            status="fail",
+                            evidence=[
+                                "command-failed",
+                                "ai-worker-execution",
+                                f"engine:{effective_engine}",
+                                f"artifact-json:{artifact}",
+                            ] + fallback_evidence,
+                            commands=command_results,
+                            error=f"ai-worker command failed: {wrapped_cmd}",
+                        )
+                # Logic failure: attempt repair via the AI engine
+                # (skip if infra fallback already resolved the failure)
+                while not succeeded and repair_attempts < max_replan:
+                    repair_attempts += 1
+                    repair_prompt = _build_repair_prompt(cmd, stderr, stdout, repair_attempts, max_replan)
+                    try:
+                        repair_wrapped = _render_worker_template(template, lane, repair_prompt, ctx)
+                    except Exception:
+                        break
+                    repair_started_at = _utc_now()
+                    repair_timed_out = False
+                    repair_returncode = 1
+                    repair_stdout = ""
+                    repair_stderr = ""
+                    try:
+                        repair_proc = subprocess.run(
+                            repair_wrapped,
+                            shell=True,
+                            cwd=str(project_root),
+                            capture_output=True,
+                            text=True,
+                            timeout=timeout_sec,
+                        )
+                        repair_returncode = int(repair_proc.returncode)
+                        repair_stdout = _clip(repair_proc.stdout)
+                        repair_stderr = _clip(repair_proc.stderr)
+                    except subprocess.TimeoutExpired:
+                        repair_timed_out = True
+                        repair_returncode = 124
+                        repair_stderr = f"timeout>{timeout_sec}s"
+                    repair_ended_at = _utc_now()
+                    command_results.append(
+                        {
+                            "cmd": repair_prompt,
+                            "wrapped_cmd": repair_wrapped,
+                            "attempt": f"repair-{repair_attempts}",
+                            "returncode": repair_returncode,
+                            "timed_out": repair_timed_out,
+                            "stdout": repair_stdout,
+                            "stderr": repair_stderr,
+                            "stdout_parsed": _json_or_text(repair_stdout),
+                            "cwd": str(project_root),
+                            "engine": effective_engine,
+                            "worker_id": worker_id,
+                            "worker_role": worker_role,
+                            "started_at": repair_started_at,
+                            "ended_at": repair_ended_at,
+                            "failure_type": _classify_failure(repair_returncode, repair_stderr, repair_timed_out) if repair_returncode != 0 else "",
+                            "evidence_tag": f"logic-failure-repair-attempt:{repair_attempts}",
+                        }
+                    )
+                    if repair_returncode == 0:
+                        succeeded = True
+                        break
+                    # If repair itself hit infrastructure failure, stop repair loop
+                    if _classify_failure(repair_returncode, repair_stderr, repair_timed_out) == "infrastructure":
+                        break
+                    # Update for next iteration context
+                    stdout = repair_stdout
+                    stderr = repair_stderr
+                    timed_out = repair_timed_out
+                    returncode = repair_returncode
+
+            if not succeeded:
+                repair_tag = "logic-failure-exhausted" if repair_attempts > 0 else "command-failed"
                 artifact = self._normalize_ai_result(
                     ctx=ctx,
                     lane=lane,
-                    engine=engine,
+                    engine=effective_engine,
                     worker_id=worker_id,
                     worker_role=worker_role,
                     status="fail",
@@ -967,11 +1265,11 @@ class AiCliWorkerAdapter(BaseAdapter):
                     lane_id=lane_id,
                     status="fail",
                     evidence=[
-                        "command-failed",
+                        repair_tag,
                         "ai-worker-execution",
-                        f"engine:{engine}",
+                        f"engine:{effective_engine}",
                         f"artifact-json:{artifact}",
-                    ],
+                    ] + fallback_evidence,
                     commands=command_results,
                     error=f"ai-worker command failed: {wrapped_cmd}",
                 )
@@ -979,14 +1277,14 @@ class AiCliWorkerAdapter(BaseAdapter):
         artifact = self._normalize_ai_result(
             ctx=ctx,
             lane=lane,
-            engine=engine,
+            engine=effective_engine,
             worker_id=worker_id,
             worker_role=worker_role,
             status="pass",
             reason="commands-pass",
             attempts=command_results,
         )
-        evidence = ["commands-pass", "ai-worker-execution", f"engine:{engine}"]
+        evidence = ["commands-pass", "ai-worker-execution", f"engine:{effective_engine}"]
         for token in guardrail_audit[:5]:
             if token not in evidence:
                 evidence.append(token)
@@ -995,6 +1293,9 @@ class AiCliWorkerAdapter(BaseAdapter):
             evidence.append(f"worker-id:{worker_id}")
         if worker_role:
             evidence.append(f"worker-role:{worker_role}")
+        for fe in fallback_evidence:
+            if fe not in evidence:
+                evidence.append(fe)
         blocked_by_code_intel, code_intel_reason = _apply_code_intelligence(
             lane=lane,
             project_root=project_root,

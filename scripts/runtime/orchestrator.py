@@ -1010,6 +1010,7 @@ class RuntimeOrchestrator:
                         "scope": lane_state.get("scope", ""),
                         "commands": self._to_commands(lane_state.get("commands", [])),
                     }
+                    limits = state.get("limits", {})
                     lane_payload["_runtime"] = {
                         "run_id": run_id,
                         "lane_id": lane_id,
@@ -1025,10 +1026,12 @@ class RuntimeOrchestrator:
                         "delegate_poll_sec": self._safe_float(lane_state.get("delegate_poll_sec", 0.3), 0.3),
                         "guardrail_environment": str(state.get("guardrail_environment", "")).strip(),
                         "command_guardrails": (
-                            dict(state.get("limits", {}).get("command_guardrails", {}))
-                            if isinstance(state.get("limits", {}).get("command_guardrails", {}), dict)
+                            dict(limits.get("command_guardrails", {}))
+                            if isinstance(limits.get("command_guardrails", {}), dict)
                             else {}
                         ),
+                        "max_replan": self._safe_int(limits.get("max_replan", 2), 2),
+                        "fallback_chain": limits.get("fallback_chain", ""),
                     }
                     futures[executor.submit(adapter.run_lane, lane_payload, self.project_root)] = lane_id
 
