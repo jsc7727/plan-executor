@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import platform
 import threading
 import time
 from datetime import datetime, timezone
@@ -24,6 +25,11 @@ def utc_compact() -> str:
 def write_json(path: Path, payload: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _shell_command_template() -> str:
+    is_windows = platform.system().strip().lower().startswith("win")
+    return "cmd /c {cmd}" if is_windows else "{cmd}"
 
 
 def build_runbook(path: Path) -> None:
@@ -71,6 +77,7 @@ def build_runbook(path: Path) -> None:
 
 
 def build_manifest(path: Path) -> None:
+    cmd_template = _shell_command_template()
     payload = {
         "meta": {
             "generated_at_utc": utc_compact(),
@@ -85,7 +92,7 @@ def build_manifest(path: Path) -> None:
                 "id": "delegate-1",
                 "role": "planner",
                 "engine": "shell",
-                "command_template": "cmd /c {cmd}",
+                "command_template": cmd_template,
                 "timeout_sec": 30,
                 "poll_sec": 0.1,
             },
@@ -93,7 +100,7 @@ def build_manifest(path: Path) -> None:
                 "id": "delegate-2",
                 "role": "designer",
                 "engine": "shell",
-                "command_template": "cmd /c {cmd}",
+                "command_template": cmd_template,
                 "timeout_sec": 30,
                 "poll_sec": 0.1,
             },
@@ -126,7 +133,7 @@ def main() -> int:
             worker_id=worker_id,
             role_filter=role,
             engine="shell",
-            command_template="cmd /c {cmd}",
+            command_template=_shell_command_template(),
             timeout_sec=30,
             interval_sec=0.05,
             max_jobs=1,
@@ -178,4 +185,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

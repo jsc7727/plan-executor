@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import sys
 import threading
 import time
 from datetime import datetime, timezone
@@ -23,6 +25,21 @@ def utc_compact() -> str:
 def write_json(path: Path, payload: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _resolve_python_cmd() -> str:
+    for candidate in ["python", "python3"]:
+        if shutil.which(candidate):
+            return candidate
+    exe = str(sys.executable).strip()
+    return exe or "python3"
+
+
+def _python_inline_command(script: str) -> str:
+    py = _resolve_python_cmd()
+    py_token = f'"{py}"' if " " in py else py
+    escaped = script.replace("\\", "\\\\").replace('"', '\\"')
+    return f'{py_token} -c "{escaped}"'
 
 
 def build_round(project_root: Path, run_id: str) -> tuple[str, str]:
@@ -79,7 +96,7 @@ def main() -> int:
                     "id": "lane-1",
                     "owner_role": "planner",
                     "scope": "sleep to allow mid-run control patch",
-                    "commands": ['python -c "import time; time.sleep(1.0); print(\'lane-1\')"'],
+                    "commands": [_python_inline_command("import time; time.sleep(1.0); print('lane-1')")],
                 }
             ],
             "checkpoints": [
@@ -203,4 +220,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import platform
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,6 +24,11 @@ def utc_compact() -> str:
 def write_json(path: Path, payload: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _shell_command_template() -> str:
+    is_windows = platform.system().strip().lower().startswith("win")
+    return "cmd /c {cmd}" if is_windows else "{cmd}"
 
 
 def build_runbook(path: Path, limits: Dict[str, Any] | None = None) -> None:
@@ -78,6 +84,7 @@ def build_runbook(path: Path, limits: Dict[str, Any] | None = None) -> None:
 
 
 def build_manifest(path: Path, engines: List[str]) -> None:
+    cmd_template = _shell_command_template()
     workers = []
     roles = ["planner", "designer"]
     ids = ["worker-1", "worker-2"]
@@ -89,8 +96,7 @@ def build_manifest(path: Path, engines: List[str]) -> None:
                 "stage": "build",
                 "contract": f"{roles[idx]}-artifact",
                 "engine": engine,
-                # Avoid real model invocation in regression tests.
-                "command_template": "cmd /c {cmd}",
+                "command_template": cmd_template,
                 "timeout_sec": 30,
                 "max_retries": 1,
                 "backoff_sec": 0.5,
@@ -289,4 +295,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
