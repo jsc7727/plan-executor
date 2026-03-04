@@ -5,6 +5,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
+import shutil
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -20,6 +23,29 @@ def utc_compact() -> str:
 def write_json(path: Path, payload: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _resolve_python_cmd() -> str:
+    for candidate in ["python", "python3"]:
+        if shutil.which(candidate):
+            return candidate
+    exe = str(sys.executable).strip()
+    return exe or "python3"
+
+
+def _python_inline_command(script: str) -> str:
+    py = _resolve_python_cmd()
+    py_token = f'"{py}"' if " " in py else py
+    escaped = script.replace("\\", "\\\\").replace('"', '\\"')
+    return f'{py_token} -c "{escaped}"'
+
+
+def _python_c_allow_pattern() -> str:
+    py = _resolve_python_cmd()
+    if py in {"python", "python3"}:
+        return rf"^{py}\s+-c\b"
+    escaped = re.escape(py).replace(r"\ ", r"\s+")
+    return rf"^{escaped}\s+-c\b"
 
 
 def build_manifest(path: Path) -> None:
@@ -48,7 +74,7 @@ def python_write_cmd(rel_path: str, content: str) -> str:
         "p.parent.mkdir(parents=True, exist_ok=True); "
         f"p.write_text({content!r}, encoding='utf-8')"
     )
-    return f'python -c "{script.replace("\\\\", "\\\\\\\\").replace(\'"\', \'\\\\\\"\')}"'
+    return _python_inline_command(script)
 
 
 def _last_lane_payload(project_root: Path, run_id: str) -> Dict[str, Any]:
@@ -105,7 +131,7 @@ def _base_runbook(
             "command_guardrails": {
                 "enabled": True,
                 "mode": "enforce",
-                "allowlist_patterns": [r"^python(\.exe)?\s+-c\b"],
+                "allowlist_patterns": [_python_c_allow_pattern()],
                 "phases": ["lane", "gate"],
                 "code_intelligence": code_intel,
             },
@@ -119,7 +145,7 @@ def case_audit_mode_reports_violation(project_root: Path, run_id: str) -> Tuple[
     manifest = pe_root / "team-manifests" / f"{run_id}.json"
     build_manifest(manifest)
     cmd = python_write_cmd(
-        "temp/code-intel/audit_case.py",
+        f"temp/code-intel/{run_id}/audit_case.py",
         "def a():\n    return 1\n\ndef b():\n    return 2\n\ndef c():\n    return 3\n",
     )
     write_json(
@@ -158,7 +184,7 @@ def case_enforce_mode_blocks_violation(project_root: Path, run_id: str) -> Tuple
     manifest = pe_root / "team-manifests" / f"{run_id}.json"
     build_manifest(manifest)
     cmd = python_write_cmd(
-        "temp/code-intel/enforce_case.py",
+        f"temp/code-intel/{run_id}/enforce_case.py",
         "def f1():\n    return 1\n\ndef f2():\n    return 2\n",
     )
     write_json(
@@ -197,7 +223,7 @@ def case_typescript_parsing_path(project_root: Path, run_id: str) -> Tuple[bool,
     manifest = pe_root / "team-manifests" / f"{run_id}.json"
     build_manifest(manifest)
     cmd = python_write_cmd(
-        "temp/code-intel/ts_case.ts",
+        f"temp/code-intel/{run_id}/ts_case.ts",
         "import { x } from './x';\nexport const A = 1;\nexport function makeB() { return x + 1; }\n",
     )
     write_json(
@@ -261,4 +287,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

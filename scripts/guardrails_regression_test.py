@@ -8,6 +8,9 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 import platform
+import re
+import shutil
+import sys
 from typing import Any, Dict, Tuple
 
 from runtime.event_store import EventStore
@@ -21,6 +24,29 @@ def utc_compact() -> str:
 def write_json(path: Path, payload: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _resolve_python_cmd() -> str:
+    for candidate in ["python", "python3"]:
+        if shutil.which(candidate):
+            return candidate
+    exe = str(sys.executable).strip()
+    return exe or "python3"
+
+
+def _python_inline_command(script: str) -> str:
+    py = _resolve_python_cmd()
+    py_token = f'"{py}"' if " " in py else py
+    escaped = script.replace("\\", "\\\\").replace('"', '\\"')
+    return f'{py_token} -c "{escaped}"'
+
+
+def _python_c_allow_pattern() -> str:
+    py = _resolve_python_cmd()
+    if py in {"python", "python3"}:
+        return rf"^{py}\s+-c\b"
+    escaped = re.escape(py).replace(r"\ ", r"\s+")
+    return rf"^{escaped}\s+-c\b"
 
 
 def build_manifest(path: Path) -> None:
@@ -81,7 +107,14 @@ def run_gate_block_case(project_root: Path, run_id: str) -> Tuple[bool, str]:
         {
             "meta": {"generated_at_utc": utc_compact(), "mode": "sequential", "task_type": "code", "max_parallel_workers": 1},
             "dag": {"nodes": [{"id": "lane-1", "depends_on": []}]},
-            "lanes": [{"id": "lane-1", "owner_role": "planner", "scope": "guardrail gate block", "commands": ['python -c "print(\'ok\')"']}],
+            "lanes": [
+                {
+                    "id": "lane-1",
+                    "owner_role": "planner",
+                    "scope": "guardrail gate block",
+                    "commands": [_python_inline_command("print('ok')")],
+                }
+            ],
             "checkpoints": [
                 {
                     "id": "checkpoint-1",
@@ -95,7 +128,7 @@ def run_gate_block_case(project_root: Path, run_id: str) -> Tuple[bool, str]:
                 "command_guardrails": {
                     "enabled": True,
                     "mode": "enforce",
-                    "allowlist_patterns": ["^python\\s+-c\\b"],
+                    "allowlist_patterns": [_python_c_allow_pattern()],
                     "phases": ["gate"],
                 },
             },

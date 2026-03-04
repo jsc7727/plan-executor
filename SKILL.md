@@ -22,6 +22,12 @@ For research-backed rationale and citations, read `references/orchestrator-paper
 ### Path: code
 
 - Inspect the local codebase and reproduce the issue or confirm requirements.
+- For all code tasks, Preflight Discovery is mandatory before any code edit.
+- Verify the real base library/wrapper implementation and type contracts before implementation.
+- Document `value`, `onChange`, and `onBlur` input/output types plus empty-value policy (`'' | null | undefined | 0`).
+- Trace `UI value -> form state -> payload serialization` before patching.
+- Check `falsy` shorthand risk (`value ? ... : ...`) for zero-loss regressions.
+- Do not enter implementation until mandatory preflight outputs are complete.
 - Create a minimal implementation plan with explicit file targets.
 - Implement the smallest complete patch first.
 - Run targeted validation (tests, typecheck, lint, or build) before broad validation.
@@ -50,6 +56,28 @@ For research-backed rationale and citations, read `references/orchestrator-paper
 - Extract target outcome, constraints, and done criteria.
 - State assumptions briefly when inputs are missing.
 - Define what must be verified at the end.
+
+### 1.5 Preflight Discovery (Mandatory for code)
+
+- This section is mandatory for every `code` path task.
+- Required outputs:
+  - `component_contracts`: actual component/wrapper base implementation and type evidence (file + symbol).
+  - `value_domain`: handling policy for `null`, `undefined`, `''`, `0`, and positive values (negative when relevant).
+  - `serialization_trace`: verified mapping from UI value to form state to payload.
+  - `risk_points`: known risk points (`falsy`, blur normalize, min/max, formatter/parser collisions).
+- Code path execution must not start without these outputs.
+- Record preflight results in a `preflight_evidence` structure.
+- Output format is optional, but intent is mandatory for all code path tasks.
+
+```yaml
+preflight_evidence:
+  component_contracts: []
+  value_domain: {}
+  serialization_trace: []
+  risk_points: []
+edge_case_matrix: []
+event_sequence_checks: []
+```
 
 ### 2. Create an execution plan
 
@@ -100,7 +128,7 @@ For research-backed rationale and citations, read `references/orchestrator-paper
 - Define checkpoint acceptance criteria before starting each lane cycle.
 - Paper basis: `CRITIC`, `SWE-agent`, `Large Language Models Cannot Self-Correct Reasoning Yet?`.
 - Example gate criteria:
-  - code: tests pass + lint clean + required artifact updated
+  - code: tests pass + lint clean + required artifact updated + numeric field `0` blur/save regression passes + serialization keeps `0` (not empty/dropped)
   - document: required sections complete + factual claims sourced
   - research: recommendation present + dated sources attached
 
@@ -268,7 +296,7 @@ agent_card:
 
 ### 3. Start executing immediately
 
-- Execute step 1 right after publishing the plan.
+- Execute step 1 right after publishing the plan (`document`/`research`) or right after mandatory preflight outputs are complete (`code`).
 - Emit short progress updates after meaningful actions.
 - Finish each step with evidence (command result, diff summary, or artifact).
 
@@ -297,6 +325,10 @@ agent_card:
 ### 6. Verify and close
 
 - Run tests/checks or best-available validation.
+- For form/number/date/serialization changes, run `input -> blur -> validate/calculate -> save` in order.
+- At each step, verify UI display value, form state value, and payload value together.
+- Treat `0` value retention through blur/save as a mandatory check item.
+- Confirm empty-value transitions follow policy and never produce `NaN`.
 - Confirm done criteria explicitly.
 - Report changed files/artifacts and residual risks.
 
@@ -340,7 +372,7 @@ Select one profile before execution.
 
 Emit these hook events in every non-trivial run:
 
-- `preflight`: objective, constraints, selected preset/profile, risk summary
+- `preflight`: objective, constraints, selected preset/profile, risk summary, `component_contract_verified`, `edge_case_matrix_defined`, `event_sequence_defined`
 - `lane_start`: lane id, owner role, contract
 - `lane_done`: changed artifacts, local verification result
 - `checkpoint`: gate decision (`pass`/`fail`) and evidence
@@ -944,3 +976,62 @@ For non-trivial tasks, use this sequence:
 3. `Verification`
 4. `Final Result`
 
+### Code-path sample (with mandatory preflight evidence)
+
+```yaml
+Plan:
+  objective: "Fix NumberInput zero-value serialization regression"
+  path: "code"
+  preflight_evidence:
+    component_contracts:
+      - component: "NumberInput"
+        wrapper: "FormNumberField"
+        base_library: "rc-input-number"
+        type_evidence:
+          value: "number | '' | null"
+          onChange: "(next: number | null) => void"
+          onBlur: "(event: FocusEvent) => void"
+    value_domain:
+      null: "persisted empty state"
+      undefined: "transient only, normalized before save"
+      empty_string: "UI clear state before blur normalization"
+      zero: "valid persisted numeric value"
+      positive: "valid persisted numeric value"
+      negative: "rejected by min constraint"
+    serialization_trace:
+      - ui_value: "0"
+        form_state: 0
+        payload_value: 0
+      - ui_value: ""
+        form_state: null
+        payload_value: null
+    risk_points:
+      - "falsy shorthand drops zero (`value ? formatted : ''`)"
+      - "blur normalize may convert 0 to empty"
+      - "min/max constraint coercion mismatch"
+      - "formatter/parser collision around empty string"
+      - "Invalid Date guard around sibling date fields"
+      - "period month/year conversion mismatch in payload mapper"
+  edge_case_matrix:
+    - case: "NumberInput receives 0 then blur"
+      expected_ui: "0"
+      expected_form_state: 0
+      expected_payload: 0
+    - case: "Input cleared then blur"
+      expected_ui: ""
+      expected_form_state: null
+      expected_payload: null
+  event_sequence_checks:
+    - "input -> blur -> validate -> save"
+    - "verify UI/form/payload at every step"
+    - "assert serialization does not convert 0 to empty"
+Execution Updates:
+  - "Apply minimal patch in blur normalizer and payload mapper without falsy shorthand."
+Verification:
+  - "Scenario A passed: 0 retained in UI/form/payload after blur/save."
+  - "Scenario B passed: clear value normalized to null without NaN."
+  - "Scenario C passed: contract evidence captured in preflight."
+  - "Scenario D passed: Invalid Date and period month/year risks listed in risk_points."
+Final Result:
+  - "Regression closed with mandatory preflight evidence and event-sequence verification."
+```

@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import sys
 import threading
 import time
 from datetime import datetime, timezone
@@ -23,6 +25,21 @@ def utc_compact() -> str:
 def write_json(path: Path, payload: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _resolve_python_cmd() -> str:
+    for candidate in ["python", "python3"]:
+        if shutil.which(candidate):
+            return candidate
+    exe = str(sys.executable).strip()
+    return exe or "python3"
+
+
+def _python_inline_command(script: str) -> str:
+    py = _resolve_python_cmd()
+    py_token = f'"{py}"' if " " in py else py
+    escaped = script.replace("\\", "\\\\").replace('"', '\\"')
+    return f'{py_token} -c "{escaped}"'
 
 
 def unit_candidate_selection() -> tuple[bool, str]:
@@ -68,13 +85,13 @@ def e2e_candidate_replan(project_root: Path) -> tuple[bool, str]:
                     "id": "lane-1",
                     "owner_role": "planner",
                     "scope": "delay lane",
-                    "commands": ['python -c "import time; time.sleep(1); print(\'lane1\')"'],
+                    "commands": [_python_inline_command("import time; time.sleep(1); print('lane1')")],
                 },
                 {
                     "id": "lane-2",
                     "owner_role": "frontend",
                     "scope": "must replan",
-                    "commands": ['python -c "import sys; sys.exit(1)"'],
+                    "commands": [_python_inline_command("import sys; sys.exit(1)")],
                 },
             ],
             "checkpoints": [{"id": "checkpoint-1", "after_lanes": ["lane-1", "lane-2"], "gate_criteria": ["ok"], "gate_commands": []}],
@@ -194,4 +211,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

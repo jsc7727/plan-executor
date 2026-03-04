@@ -471,8 +471,20 @@ def _extract_delete_target(cmd: str) -> Tuple[bool, str]:
     first = tokens[0].strip().lower()
 
     if first in {"rm", "/bin/rm"}:
-        has_r = any("-r" in t.lower() or "--recursive" in t.lower() for t in tokens[1:])
-        has_f = any("-f" in t.lower() or "--force" in t.lower() for t in tokens[1:])
+        def _has_rm_flag(token: str, short_flag: str, long_flag: str) -> bool:
+            t = str(token).strip().lower()
+            if not t:
+                return False
+            if t == long_flag:
+                return True
+            if t.startswith("--"):
+                return False
+            if t.startswith("-") and len(t) > 1:
+                return short_flag in t[1:]
+            return False
+
+        has_r = any(_has_rm_flag(t, "r", "--recursive") for t in tokens[1:])
+        has_f = any(_has_rm_flag(t, "f", "--force") for t in tokens[1:])
         if not (has_r and has_f):
             return False, ""
         candidates = [t for t in tokens[1:] if not t.startswith("-")]
